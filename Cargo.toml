@@ -4,3 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+claims = "0.8.0"
+nom = "8.0.0"
+nom-language = "0.1.0"
+
+[dev-dependencies]
+proptest = "1.8.0"
