@@ -1,12 +1,8 @@
-pub struct RequestLine {
-  method: HttpMethod,
-}
-
 /// The HTTP request method is the primary source of request semantics;
 /// it indicates the purpose for which the client has made this request
 /// and what is expected by the client as a successful result.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HttpMethod {
+pub enum HttpVerb {
   /// Transfer a current representation of the target resource.
   Get,
   /// Same as GET, but do not transfer the response content.

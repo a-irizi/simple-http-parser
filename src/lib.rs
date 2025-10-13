@@ -1,6 +1,7 @@
 pub mod error;
-mod request;
-mod request_method;
+mod request_line;
+mod syn;
+mod utils;
 
 pub(crate) use error::{Error, Result};
-pub(crate) use request::*;
+pub(crate) use syn::*;

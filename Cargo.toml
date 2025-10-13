@@ -4,9 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-claims = "0.8.0"
 nom = "8.0.0"
 nom-language = "0.1.0"
+thiserror = "2.0.17"
+url = "2.5.7"
 
 [dev-dependencies]
 proptest = "1.8.0"
+rstest = { version = "0.26.1", default-features = false, features = [
+  "crate-name",
+] }
+const_format = "0.2.35"
+claims = "0.8.0"
