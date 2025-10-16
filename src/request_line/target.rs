@@ -22,50 +22,58 @@ const SCHEME_TERMINATOR: &str = "://";
 
 pub(super) fn parse_request_target(
   input: &[u8],
-) -> super::Result<'_, (&'_ [u8], &'_ [u8], RequestTarget<'_>)> {
-  let (rest, lexeme) = lexeme_before_sp(input).unwrap();
-
+) -> super::Result<'_, (&'_ [u8], RequestTarget<'_>)> {
   // target must not be empty
-  if lexeme == b"" {
-    return Err(super::Error::InvalidTarget { lexeme, kind: InvalidTargetKind::Empty });
+  if input == b"" {
+    return Err(super::Error::InvalidTarget { lexeme: input, kind: InvalidTargetKind::Empty });
   }
 
-  if lexeme == b"*" {
-    return Ok((rest, b"", RequestTarget::Asterisk));
+  if let Ok(result) = asterisk_host(input) {
+    return Ok(result);
   }
 
-  if !lexeme.is_ascii() {
-    return Err(super::Error::InvalidTarget { lexeme, kind: InvalidTargetKind::InvalidEncoding });
+  if !input.is_ascii() {
+    return Err(super::Error::InvalidTarget {
+      lexeme: input,
+      kind: InvalidTargetKind::InvalidEncoding,
+    });
   }
 
-  let lexeme_str = str::from_utf8(lexeme).expect("lexeme is ASCII");
+  let lexeme = str::from_utf8(input).expect("input is ASCII");
 
-  let (rest2, target) = if let Some(is_http) = starts_with_http_scheme_with_terminator(lexeme) {
+  let (rest, target) = if let Some(is_http) = starts_with_http_scheme_with_terminator(input) {
     if is_http {
-      let url = Url::parse(lexeme_str).map_err(|_| super::Error::InvalidTarget {
-        lexeme,
+      let url = Url::parse(lexeme).map_err(|_| super::Error::InvalidTarget {
+        lexeme: input,
         kind: InvalidTargetKind::InvalidAbsoluteTarget,
       })?;
-      (b"", RequestTarget::absolute_from_url(lexeme_str, &url))
+      (b"", RequestTarget::absolute_from_url(lexeme, &url))
     } else {
-      return Err(super::Error::InvalidTarget { lexeme, kind: InvalidTargetKind::InvalidScheme });
+      return Err(super::Error::InvalidTarget {
+        lexeme: input,
+        kind: InvalidTargetKind::InvalidScheme,
+      });
     }
-  } else if lexeme_str.starts_with('/') {
+  } else if lexeme.starts_with('/') {
     let url = Url::parse("www.dummy.com").expect("valid url");
-    let url = url.join(lexeme_str).map_err(|_| super::Error::InvalidTarget {
-      lexeme,
+    let url = url.join(lexeme).map_err(|_| super::Error::InvalidTarget {
+      lexeme: input,
       kind: InvalidTargetKind::InvalidOriginTarget,
     })?;
-    (b"", RequestTarget::origin_from_url(lexeme_str, &url))
+    (b"", RequestTarget::origin_from_url(lexeme, &url))
   } else {
-    let (_, (host, port)) = authority_form_target(lexeme).map_err(|_| {
-      super::Error::InvalidTarget { lexeme, kind: InvalidTargetKind::InvalidAuthorityTarget }
+    let (_, (host, port)) = authority_form_target(input).map_err(|_| {
+      super::Error::InvalidTarget { lexeme: input, kind: InvalidTargetKind::InvalidAuthorityTarget }
     })?;
 
     (b"", RequestTarget::Authority { host, port })
   };
 
-  Ok((rest, rest2, target))
+  Ok((rest, target))
+}
+
+fn asterisk_host(input: &'_ [u8]) -> IResult<&'_ [u8], RequestTarget<'_>, VerboseError<&'_ [u8]>> {
+  tag(b"*".as_slice()).map(|_| RequestTarget::Asterisk).parse(input)
 }
 
 /// check if input starts with an HTTP scheme.
