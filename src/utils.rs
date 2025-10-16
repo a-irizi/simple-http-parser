@@ -17,7 +17,7 @@ pub fn lexeme_before_sp(input: &[u8]) -> IResult<&[u8], &[u8]> {
 ///
 /// # Panics
 /// panics if the second argument is not a slice of the first argument.
-pub fn restore_lifetime<'src, 'b>(source: &'src str, slice: &'b str) -> &'src str {
+pub fn restore_lifetime<'src>(source: &'src str, slice: &str) -> &'src str {
   let source_start_ptr = source.as_ptr() as usize;
   let source_end_ptr = source_start_ptr + source.len();
 

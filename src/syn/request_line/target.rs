@@ -39,8 +39,8 @@ impl<'src> RequestTarget<'src> {
   pub fn absolute_from_url(full_url: &'src str, url: &url::Url) -> Self {
     RequestTarget::Absolute {
       scheme: match url.scheme() {
-        HTTPS_SCHEME => HttpScheme::HTTPS,
-        HTTP_SCHEME => HttpScheme::HTTP,
+        HTTPS_SCHEME => HttpScheme::Https,
+        HTTP_SCHEME => HttpScheme::Http,
         _ => unreachable!("exhausted HTTP scheme variants"),
       },
       password: url.password().map(|password| restore_lifetime(full_url, password)),
@@ -49,7 +49,7 @@ impl<'src> RequestTarget<'src> {
         .map(|username| restore_lifetime(full_url, username)),
       host: crate::Host::from_url_host(
         full_url,
-        url.host().expect("HTTP url with scheme must have a host"),
+        &url.host().expect("HTTP url with scheme must have a host"),
       ),
       port: url.port(),
       path: restore_lifetime(full_url, url.path()),
@@ -65,8 +65,15 @@ impl<'src> RequestTarget<'src> {
 }
 
 pub enum HttpScheme {
-  HTTP,
-  HTTPS,
+  Http,
+  Https,
+}
+
+impl HttpScheme {
+  /// is this a secure scheme.
+  pub fn is_secure(&self) -> bool {
+    matches!(self, Self::Https)
+  }
 }
 
 pub enum Host<'src> {
@@ -76,18 +83,11 @@ pub enum Host<'src> {
 }
 
 impl<'src, 'url> Host<'src> {
-  pub fn from_url_host(full_url: &'src str, value: url::Host<&'url str>) -> Self {
-    match value {
+  pub fn from_url_host(full_url: &'src str, value: &url::Host<&'url str>) -> Self {
+    match *value {
       url::Host::Domain(domain) => Self::Domain(restore_lifetime(full_url, domain)),
       url::Host::Ipv4(ipv4_addr) => Self::Ipv4(ipv4_addr),
       url::Host::Ipv6(ipv6_addr) => Self::Ipv6(ipv6_addr),
     }
-  }
-}
-
-impl HttpScheme {
-  /// is this a secure scheme.
-  pub fn is_secure(&self) -> bool {
-    matches!(self, Self::HTTPS)
   }
 }

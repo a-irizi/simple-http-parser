@@ -24,9 +24,7 @@ pub fn parse_http_method(input: &[u8]) -> super::Result<'_, (&[u8], HttpVerb)> {
   }
 }
 
-pub fn parse_http_method_inner<'src>(
-  input: &'src [u8],
-) -> IResult<&'src [u8], HttpVerb, VerboseError<&'src [u8]>> {
+pub fn parse_http_method_inner(input: &[u8]) -> IResult<&[u8], HttpVerb, VerboseError<&[u8]>> {
   context(
     "request verb",
     alt((
