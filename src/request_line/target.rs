@@ -13,12 +13,12 @@ use nom_language::error::{VerboseError, VerboseErrorKind};
 use url::Url;
 
 use crate::{
-  RequestTarget, UriHost, request_line::error::InvalidTargetKind, utils::lexeme_before_sp,
+  RequestTarget, UriHost,
+  constants::{HTTP_SCHEME, HTTPS_SCHEME},
+  request_line::error::InvalidTargetKind,
 };
 
-const HTTP_SCHEME: &str = "http";
-const HTTPS_SCHEME: &str = "https";
-const SCHEME_TERMINATOR: &str = "://";
+pub const SCHEME_TERMINATOR: &str = "://";
 
 pub(super) fn parse_request_target(
   input: &[u8],

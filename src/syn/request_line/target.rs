@@ -1,6 +1,9 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use crate::utils::restore_lifetime;
+use crate::{
+  constants::{HTTP_SCHEME, HTTPS_SCHEME},
+  utils::restore_lifetime,
+};
 
 /// The request-target identifies the target resource upon which to apply
 /// the request
