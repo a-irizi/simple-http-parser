@@ -19,10 +19,17 @@ pub enum RequestTarget<'src> {
     query: Option<&'src str>,
   },
   Authority {
-    host: &'src str,
+    host: UriHost<'src>,
     port: u16,
   },
   Asterisk,
+}
+
+#[derive(Debug)]
+pub enum UriHost<'src> {
+  IPv6(Ipv6Addr),
+  IPv4(Ipv4Addr),
+  Domain(&'src str),
 }
 
 impl<'src> RequestTarget<'src> {

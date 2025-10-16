@@ -4,14 +4,17 @@ use nom::{
   IResult, Parser,
   branch::alt,
   bytes::complete::{tag, take_while, take_while_m_n, take_while1},
-  combinator::peek,
+  combinator::{peek, recognize},
   error::context,
+  multi::separated_list1,
   sequence::{delimited, separated_pair, terminated},
 };
 use nom_language::error::{VerboseError, VerboseErrorKind};
 use url::Url;
 
-use crate::{RequestTarget, request_line::error::InvalidTargetKind, utils::lexeme_before_sp};
+use crate::{
+  RequestTarget, UriHost, request_line::error::InvalidTargetKind, utils::lexeme_before_sp,
+};
 
 const HTTP_SCHEME: &str = "http";
 const HTTPS_SCHEME: &str = "https";
@@ -19,7 +22,7 @@ const SCHEME_TERMINATOR: &str = "://";
 
 pub(super) fn parse_request_target(
   input: &[u8],
-) -> super::Result<'_, (&'_ [u8], RequestTarget<'_>)> {
+) -> super::Result<'_, (&'_ [u8], &'_ [u8], RequestTarget<'_>)> {
   let (rest, lexeme) = lexeme_before_sp(input).unwrap();
 
   // target must not be empty
@@ -28,7 +31,7 @@ pub(super) fn parse_request_target(
   }
 
   if lexeme == b"*" {
-    return Ok((rest, RequestTarget::Asterisk));
+    return Ok((rest, b"", RequestTarget::Asterisk));
   }
 
   if !lexeme.is_ascii() {
@@ -37,13 +40,13 @@ pub(super) fn parse_request_target(
 
   let lexeme_str = str::from_utf8(lexeme).expect("lexeme is ASCII");
 
-  let target = if let Some(is_http) = starts_with_http_scheme_with_terminator(lexeme) {
+  let (rest2, target) = if let Some(is_http) = starts_with_http_scheme_with_terminator(lexeme) {
     if is_http {
       let url = Url::parse(lexeme_str).map_err(|_| super::Error::InvalidTarget {
         lexeme,
         kind: InvalidTargetKind::InvalidAbsoluteTarget,
       })?;
-      RequestTarget::absolute_from_url(lexeme_str, &url)
+      (b"", RequestTarget::absolute_from_url(lexeme_str, &url))
     } else {
       return Err(super::Error::InvalidTarget { lexeme, kind: InvalidTargetKind::InvalidScheme });
     }
@@ -53,12 +56,16 @@ pub(super) fn parse_request_target(
       lexeme,
       kind: InvalidTargetKind::InvalidOriginTarget,
     })?;
-    RequestTarget::origin_from_url(lexeme_str, &url)
+    (b"", RequestTarget::origin_from_url(lexeme_str, &url))
   } else {
-    todo!()
+    let (_, (host, port)) = authority_form_target(lexeme).map_err(|_| {
+      super::Error::InvalidTarget { lexeme, kind: InvalidTargetKind::InvalidAuthorityTarget }
+    })?;
+
+    (b"", RequestTarget::Authority { host, port })
   };
 
-  todo!()
+  Ok((rest, rest2, target))
 }
 
 /// check if input starts with an HTTP scheme.
@@ -99,9 +106,7 @@ fn http_scheme_with_terminator(input: &[u8]) -> IResult<&[u8], &[u8], VerboseErr
   .parse(input)
 }
 
-fn valid_scheme_with_terminator(
-  input: &[u8],
-) -> IResult<&[u8], (&[u8], &[u8]), VerboseError<&[u8]>> {
+fn valid_scheme_with_terminator(input: &[u8]) -> IResult<&[u8], &[u8], VerboseError<&[u8]>> {
   terminated(
     context("any valid scheme", valid_scheme),
     context("any valid scheme terminator", tag(SCHEME_TERMINATOR.as_bytes())),
@@ -109,19 +114,30 @@ fn valid_scheme_with_terminator(
   .parse(input)
 }
 
-fn valid_scheme(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8]), VerboseError<&[u8]>> {
-  let (rest, parsed) = context(
-    "mandatory start with ASCII alphabetic",
-    take_while_m_n(1, 1, |b: u8| b.is_ascii_alphabetic()),
-  )
-  .parse(input)?;
-  let (rest, parsed2) = context(
-    "optional trailing ASCII alphabetic, digits, '-', '+' or '.'",
-    take_while(|b: u8| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'+' | b'-' | b'.')),
-  )
-  .parse(rest)?;
+fn valid_scheme(input: &[u8]) -> IResult<&[u8], &[u8], VerboseError<&[u8]>> {
+  recognize((
+    context(
+      "mandatory start with ASCII alphabetic",
+      take_while_m_n(1, 1, |b: u8| b.is_ascii_alphabetic()),
+    ),
+    context(
+      "optional trailing ASCII alphabetic, digits, '-', '+' or '.'",
+      take_while(|b: u8| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'+' | b'-' | b'.')),
+    ),
+  ))
+  .parse(input)
+}
 
-  Ok((rest, (parsed, parsed2)))
+fn authority_form_target(
+  input: &'_ [u8],
+) -> IResult<&'_ [u8], (UriHost<'_>, u16), VerboseError<&'_ [u8]>> {
+  alt((
+    context("IP v6 host and port", ip_v6_host_and_port).map(|(ip, port)| (UriHost::IPv6(ip), port)),
+    context("IP v4 host and port", ip_v4_host_and_port).map(|(ip, port)| (UriHost::IPv4(ip), port)),
+    context("domain host and port", domain_host_and_port)
+      .map(|(domain, port)| (UriHost::Domain(domain), port)),
+  ))
+  .parse(input)
 }
 
 fn ip_v6_host_and_port(input: &[u8]) -> IResult<&[u8], (Ipv6Addr, u16), VerboseError<&[u8]>> {
@@ -196,6 +212,59 @@ fn raw_ip_v4_host(input: &[u8]) -> IResult<&[u8], [u8; 4], VerboseError<&[u8]>> 
   Ok((rest, [a, b, c, d]))
 }
 
+fn domain_host_and_port(input: &[u8]) -> IResult<&[u8], (&str, u16), VerboseError<&[u8]>> {
+  separated_pair(
+    context("domain host", domain_host),
+    context("colon separating domain host and port", tag(b":".as_slice())),
+    context("port", nom::character::complete::u16),
+  )
+  .parse(input)
+}
+
+fn domain_host(input: &[u8]) -> IResult<&[u8], &str, VerboseError<&[u8]>> {
+  let (rest, parsed) =
+    recognize(separated_list1(tag(b".".as_slice()), domain_label)).parse(input)?;
+
+  Ok((
+    rest,
+    str::from_utf8(parsed)
+      .expect("parsed is made of ASCII alphanumeric characters, '.' and '-' characters"),
+  ))
+}
+
+fn domain_label(input: &[u8]) -> IResult<&[u8], &str, VerboseError<&[u8]>> {
+  let (rest, label) = context(
+    "domain label valid characters",
+    take_while(|b: u8| b == b'-' || b.is_ascii_alphanumeric()),
+  )
+  .parse(input)?;
+  let label =
+    str::from_utf8(label).expect("label contains only hyphens and ASCII alphanumeric characters");
+
+  if !(1..=63).contains(&label.len()) {
+    return Err(nom::Err::Error(VerboseError {
+      errors: vec![(
+        input,
+        VerboseErrorKind::Context("labels must be 63 characters or less, and must not be empty"),
+      )],
+    }));
+  }
+
+  if !label.starts_with(|c: char| c.is_ascii_alphabetic()) {
+    return Err(nom::Err::Error(VerboseError {
+      errors: vec![(input, VerboseErrorKind::Context("labels must start with a letter"))],
+    }));
+  }
+
+  if !label.ends_with(|c: char| c.is_ascii_alphanumeric()) {
+    return Err(nom::Err::Error(VerboseError {
+      errors: vec![(input, VerboseErrorKind::Context("labels must start with a letter"))],
+    }));
+  }
+
+  Ok((rest, label))
+}
+
 #[cfg(test)]
 mod tests {
   use proptest::prelude::ProptestConfig;
@@ -208,7 +277,12 @@ mod tests {
   };
   use rstest::rstest;
 
-  use super::*;
+  use super::{
+    HTTP_SCHEME, HTTPS_SCHEME, Ipv4Addr, Ipv6Addr, SCHEME_TERMINATOR, Url, authority_form_target,
+    domain_host, domain_host_and_port, http_scheme_with_terminator, ip_v4_host,
+    ip_v4_host_and_port, ip_v6_host, ip_v6_host_and_port, starts_with_http_scheme_with_terminator,
+    valid_scheme, valid_scheme_with_terminator,
+  };
 
   const VALID_SCHEME_CHARS_REGEX: &str = "[a-zA-Z0-9\\-\\.\\+]";
   const INVALID_SCHEME_CHARS_REGEX: &str = "[^a-zA-Z0-9\\-\\.\\+]";
@@ -282,7 +356,7 @@ mod tests {
     fn valid_scheme_ok(scheme in valid_scheme_strategy()) {
       let (rest, parsed) = assert_ok!(valid_scheme(scheme.as_bytes()));
       assert_eq!(b"", rest);
-      assert_eq!((&scheme.as_bytes()[..1], &scheme.as_bytes()[1..]), parsed);
+      assert_eq!(scheme.as_bytes(), parsed);
     }
 
     #[test]
@@ -293,7 +367,7 @@ mod tests {
         let scheme_len = scheme_with_terminator.len() - SCHEME_TERMINATOR.len();
         &scheme_with_terminator[..scheme_len]
       };
-      assert_eq!((&scheme.as_bytes()[..1], &scheme.as_bytes()[1..]), parsed);
+      assert_eq!(scheme.as_bytes(), parsed);
     }
 
     #[test]
@@ -364,7 +438,7 @@ mod tests {
     let scheme = "a";
     let (rest, parsed) = assert_ok!(valid_scheme(scheme.as_bytes()));
     assert_eq!(b"", rest);
-    assert_eq!((b"a".as_slice(), b"".as_slice()), parsed);
+    assert_eq!(b"a".as_slice(), parsed);
   }
 
   #[test]
@@ -372,7 +446,7 @@ mod tests {
     let scheme = "a://";
     let (rest, parsed) = assert_ok!(valid_scheme_with_terminator(scheme.as_bytes()));
     assert_eq!(b"", rest);
-    assert_eq!((b"a".as_slice(), b"".as_slice()), parsed);
+    assert_eq!(b"a".as_slice(), parsed);
   }
 
   #[rstest]
@@ -492,6 +566,25 @@ mod tests {
     let low = u16::from(low);
     high | low
   }
+
+  fn combine_8_u16_into_u128(bits: [u16; 8]) -> u128 {
+    let mut result: u128 = 0;
+    for (shift, bits) in (0..8).map(|i| i * 16).rev().zip(bits) {
+      result |= u128::from(bits) << shift
+    }
+
+    result
+  }
+
+  fn combine_4_u8_into_u32(bits: [u8; 4]) -> u32 {
+    let mut result: u32 = 0;
+    for (shift, bits) in (0..4).map(|i| i * 8).rev().zip(bits) {
+      result |= u32::from(bits) << shift
+    }
+
+    result
+  }
+
   prop_compose! {
     fn ip_v6_mapped_ip_v4_addr_strategy()
       ((octets, ip_v4) in ip_v4_addr_strategy()) -> ([u16; 8], String) {
@@ -644,6 +737,140 @@ mod tests {
     #[test]
     fn ip_v4_host_and_port_err_all(input in ".*") {
        assert_err!(ip_v4_host_and_port(input.as_bytes()));
+    }
+  }
+
+  prop_compose! {
+    fn alphanumeric_and_hyphen_strategy()(i in "[a-zA-Z0-9\\-]{0,61}") -> String {
+      i
+    }
+  }
+
+  prop_compose! {
+    fn alphanumeric_and_hyphen_ends_with_alphanumeric_strategy()
+      (anh in alphanumeric_and_hyphen_strategy(), an in "[a-zA-Z0-9]{1}") -> String{
+      format!("{anh}{an}")
+    }
+  }
+
+  prop_compose! {
+    fn optional_alphanumeric_strategy()(an in "[a-zA-Z0-9]{0,1}") -> String {
+      an
+    }
+  }
+
+  fn domain_host_label_remainder_strategy() -> impl Strategy<Value = String> {
+    prop_oneof![
+      optional_alphanumeric_strategy(),
+      alphanumeric_and_hyphen_ends_with_alphanumeric_strategy()
+    ]
+  }
+
+  prop_compose! {
+    fn domain_host_label_strategy()(a in "[a-zA-Z]", remainder in domain_host_label_remainder_strategy()) -> String {
+      format!("{a}{remainder}")
+    }
+  }
+  prop_compose! {
+    fn domain_host_strategy(max_label_count: usize)
+      (labels in proptest::collection::vec(domain_host_label_strategy(), max_label_count)) -> String {
+      labels.join(".")
+    }
+  }
+
+  prop_compose! {
+    fn invalid_domain_host_strategy()(input in "\\S*".prop_filter("valid domain host label", |s| {
+      !s.starts_with(|c: char| c.is_ascii_alphabetic()) &&
+      (s.len() > 63
+        || !s.ends_with(|c: char| c.is_ascii_alphanumeric())
+        || s.contains(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '.'))
+        }
+    )) -> String {
+      input
+    }
+  }
+
+  proptest! {
+    #[test]
+    fn domain_host_ok(host in domain_host_strategy(12)) {
+      let (rest, parsed) = assert_ok!(domain_host(host.as_bytes()));
+      assert_eq!(host, parsed);
+      assert!(rest.is_empty());
+    }
+  }
+
+  proptest! {
+    #[test]
+    fn domain_host_err(input in invalid_domain_host_strategy()) {
+      assert_err!(domain_host(input.as_bytes()));
+    }
+  }
+
+  prop_compose! {
+    fn domain_host_and_port_strategy(max_label_count: usize)
+      (host in domain_host_strategy(max_label_count), port in any::<u16>()) -> (String, u16, String) {
+      let host_and_port = format!("{host}:{port}");
+      (host, port, host_and_port)
+    }
+  }
+
+  proptest! {
+    #[test]
+    fn domain_host_and_port_ok((host, port, host_and_port) in domain_host_and_port_strategy(12)) {
+      let (rest, parsed) = assert_ok!(domain_host_and_port(host_and_port.as_bytes()));
+      assert_eq!((host.as_str(), port), parsed);
+      assert!(rest.is_empty());
+    }
+  }
+
+  #[derive(Debug)]
+  struct AuthorityForm {
+    host: UriHost,
+    port: u16,
+    repr: String,
+  }
+
+  #[derive(Debug)]
+  enum UriHost {
+    IPv6(Ipv6Addr),
+    IPv4(Ipv4Addr),
+    Domain(String),
+  }
+
+  fn authority_form_strategy(max_label_count: usize) -> impl Strategy<Value = AuthorityForm> {
+    prop_oneof![
+      ip_v6_host_and_port_strategy().prop_map(|(segments, port, repr)| {
+        AuthorityForm {
+          host: UriHost::IPv6(Ipv6Addr::from_bits(combine_8_u16_into_u128(segments))),
+          port,
+          repr,
+        }
+      }),
+      ip_v4_host_and_port_strategy().prop_map(|(octets, port, repr)| AuthorityForm {
+        host: UriHost::IPv4(Ipv4Addr::from_bits(combine_4_u8_into_u32(octets))),
+        port,
+        repr
+      }),
+      domain_host_and_port_strategy(max_label_count).prop_map(|(domain, port, repr)| {
+        AuthorityForm { host: UriHost::Domain(domain), port, repr }
+      })
+    ]
+  }
+
+  proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1000))]
+    #[test]
+    fn authority_form_target_ok(AuthorityForm {host, port, repr} in authority_form_strategy(12)) {
+      println!("{repr}");
+      let (rest, (parsed_host, parsed_port)) = assert_ok!(authority_form_target(repr.as_bytes()));
+      assert!(rest.is_empty());
+      assert_eq!(port, parsed_port);
+      match (&parsed_host, &host) {
+        (crate::UriHost::IPv6(parsed_ipv6_addr), UriHost::IPv6(ipv6_addr)) => assert_eq!(ipv6_addr, parsed_ipv6_addr),
+        (crate::UriHost::IPv4(parsed_ipv4_addr), UriHost::IPv4(ipv4_addr)) => assert_eq!(ipv4_addr, parsed_ipv4_addr),
+        (crate::UriHost::Domain(parsed_domain), UriHost::Domain(domain)) => assert_eq!(domain, parsed_domain),
+        _ => panic!("{host:?} {parsed_host:?} do not match"),
+      }
     }
   }
 }

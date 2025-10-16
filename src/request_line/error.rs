@@ -16,5 +16,6 @@ pub enum InvalidTargetKind {
   InvalidEncoding,
   InvalidAbsoluteTarget,
   InvalidOriginTarget,
+  InvalidAuthorityTarget,
   InvalidScheme,
 }
